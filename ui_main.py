@@ -4,6 +4,7 @@ import sqlite3
 import threading
 import csv
 import os
+import json
 from datetime import datetime
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
@@ -411,7 +412,7 @@ class MainWindow(QWidget):
     def on_click_upload(self):
         t = threading.Thread(target=self.run_upload, daemon=True)
         t.start()
-        
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("SUP-ADMIN")
