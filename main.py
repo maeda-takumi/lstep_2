@@ -85,7 +85,12 @@ def save_to_db(name, href, friend_registered_at=None, support=None, display_name
         cursor.execute(
             """
             UPDATE users
-            SET line_name = ?, href = ?, friend_registered_at = ?, support = ?, display_name = ?
+            SET
+                line_name = ?,
+                href = ?,
+                friend_registered_at = COALESCE(?, friend_registered_at),
+                support = COALESCE(?, support),
+                display_name = COALESCE(?, display_name)
             WHERE id = ?
             """,
             (name, href, friend_registered_at, support, display_name, existing_id)
@@ -195,7 +200,14 @@ def fetch_user_detail_info(driver, href, timeout=12, debug=False):
 # -------------------------
 # 一覧ページからユーザーとhrefを取り、詳細ページから日付を取って保存
 # -------------------------
-def scrape_current_page(driver):
+def _log(logger, message):
+    if logger:
+        logger.message.emit(message)
+    else:
+        print(message)
+
+
+def scrape_current_page(driver, logger=None, fetch_details=True):
     html = driver.page_source
     soup = BeautifulSoup(html, "html.parser")
 
@@ -211,12 +223,15 @@ def scrape_current_page(driver):
         # ★ ここで詳細ページへ取りに行く（時刻込み）
         friend_registered_at = None
         display_name = None
-        # if href:
-        #     detail = fetch_user_detail_info(driver, href)
-        #     friend_registered_at = detail.get("friend_registered_at")
-        #     display_name = detail.get("display_name")
-            
-        print(f"{name}: {href} / friend_registered_at={friend_registered_at} / display_name={display_name}")
+        if href and fetch_details:
+            try:
+                detail = fetch_user_detail_info(driver, href)
+                friend_registered_at = detail.get("friend_registered_at")
+                display_name = detail.get("display_name")
+            except Exception as e:
+                _log(logger, f"⚠️ 詳細取得失敗: {name} ({href}) / {e}")
+
+        _log(logger, f"✅ LStep友だち取得: {name}: {href} / friend_registered_at={friend_registered_at} / display_name={display_name}")
         save_to_db(name, href, friend_registered_at=friend_registered_at, display_name=display_name)
 
 
@@ -237,15 +252,18 @@ def go_to_next_page(driver):
     next_button.click()
     time.sleep(2)
 
-def scrape_user_list(driver):
+def scrape_user_list(driver, logger=None, fetch_details=True):
     initialize_db()
+    page = 1
     while True:
-        scrape_current_page(driver)
+        _log(logger, f"🟡 LStep友だち一覧 {page} ページ目を取得中…")
+        scrape_current_page(driver, logger=logger, fetch_details=fetch_details)
         if has_next_page(driver):
             go_to_next_page(driver)
+            page += 1
         else:
             break
-    print("✅ 全ページのデータ取得が完了しました。")
+    _log(logger, "✅ LStep友だち一覧の全ページ取得が完了しました。")
 
 # メイン処理
 if __name__ == "__main__":

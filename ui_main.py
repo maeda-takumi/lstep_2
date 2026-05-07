@@ -155,95 +155,81 @@ def clear_tables(include_messages: bool = True):
     conn.close()
 
 # ===================== スクレイピング処理（別スレッド） =====================
-def run_scraping(logger: UILogger):
+def wait_for_user_gate(logger: UILogger, instructions: str) -> bool:
+    """手動ログイン/移動完了待ちの共通ゲート。"""
+    proceed_event = threading.Event()
+    cancel_event = threading.Event()
+    logger.open_gate.emit("ログイン＆移動のお願い", instructions, proceed_event, cancel_event)
+
+    while True:
+        if proceed_event.wait(timeout=0.1):
+            return True
+        if cancel_event.is_set():
+            logger.message.emit("🛑 ユーザー操作によりキャンセルされました。")
+            return False
+
+
+def open_lstep_driver(logger: UILogger, instructions: str):
+    """LStep/LMessage共通のブラウザ起動・ログイン入力・手動移動待ち。"""
+    logger.message.emit("🟡 ブラウザを起動します…")
+    options = Options()
+    options.add_experimental_option("detach", True)
+    driver = webdriver.Chrome(options=options)
+    driver.get("https://step.lme.jp/")
+    driver.get("https://step.lme.jp/")
+
+    # ▼▼▼ ログインフォーム自動入力（ボタン押下なし） ▼▼▼
+    try:
+        logger.message.emit("🟡 ログインID・パスワードを自動入力しています…")
+        wait = WebDriverWait(driver, 20)
+        login_id = wait.until(EC.presence_of_element_located((By.ID, "email_login")))
+        login_pw = wait.until(EC.presence_of_element_located((By.ID, "password_login")))
+        
+        login_id.clear()
+        login_id.send_keys("miomama0605@gmail.com")
+        login_pw.clear()
+        login_pw.send_keys("20250606@Mio")
+
+        logger.message.emit("🟡 ID・パスワードの入力が完了しました。ログイン操作は手動で行ってください。")
+    except Exception as e:
+        logger.message.emit(f"⚠️ ログイン自動入力に失敗: {e}")
+    # ▲▲▲ 自動入力ここまで ▲▲▲
+
+    if not wait_for_user_gate(logger, instructions):
+        driver.quit()
+        return None
+    return driver
+
+def sync_support_after_scraping(logger: UILogger):
+    logger.message.emit("🟢 サポート担当の同期を開始します…")
+    try:
+        # スプレッドシート → users.support を更新（B列=LINE名、F列=担当者）
+        update_support_sync_main()
+        logger.message.emit("✅ サポート担当の同期が完了しました。")
+    except Exception as e:
+        logger.message.emit(f"❌ サポート担当の同期に失敗: {e}")
+def run_lstep_scraping(logger: UILogger):
+    """LStepの友だち一覧・詳細情報を取得してusersへ保存する。"""
     driver = None
     try:
         logger.enable_ui.emit(False)
-        logger.message.emit("🟡 初期化中…")
+        logger.message.emit("🟡 LStep友だち一覧取得を初期化中…")
         initialize_db()
-        initialize_message_table()
 
-        logger.message.emit("🟡 既存データをクリアします（users / messages）")
-        # clear_tables()
-
-        logger.message.emit("🟡 ブラウザを起動します…")
-        options = Options()
-        options.add_experimental_option("detach", True)
-        driver = webdriver.Chrome(options=options)
-        driver.get("https://step.lme.jp/")
-        driver.get("https://step.lme.jp/")
-
-        # ▼▼▼ ログインフォーム自動入力（ボタン押下なし） ▼▼▼
-        try:
-            logger.message.emit("🟡 ログインID・パスワードを自動入力しています…")
-
-            # ログインフォームの要素が出るまで待機
-            wait = WebDriverWait(driver, 20)
-
-            # id="email_login" の入力欄を取得
-            login_id = wait.until(
-                EC.presence_of_element_located((By.ID, "email_login"))
-            )
-
-            # id="password_login" の入力欄を取得
-            login_pw = wait.until(
-                EC.presence_of_element_located((By.ID, "password_login"))
-            )
-
-            # 値を入力（とりあえずダミー）
-            login_id.clear()
-            login_id.send_keys("miomama0605@gmail.com")
-
-            login_pw.clear()
-            login_pw.send_keys("20250606@Mio")
-            # 値を入力（とりあえずダミー）
-            # login_id.clear()
-            # login_id.send_keys("systemsoufu9@gmail.com")
-
-            # login_pw.clear()
-            # login_pw.send_keys("Kannai555@")
-            
-            logger.message.emit("🟡 ID・パスワードの入力が完了しました。ログイン操作は手動で行ってください。")
-
-        except Exception as e:
-            logger.message.emit(f"⚠️ ログイン自動入力に失敗: {e}")
-
-        # ▲▲▲ 自動入力ここまで ▲▲▲
-
-        # ---- UIゲート（OKで続行 / キャンセルで中断）----
-        proceed_event = threading.Event()
-        cancel_event = threading.Event()
         instructions = (
             "1) ブラウザでLステップにログインしてください。\n"
             "2) 対象の『友達リスト』まで手動で移動してください。\n"
-            "3) 画面が開けたら、このポップアップの［続行］を押してください。\n\n"
-            "※［キャンセル］を押すと処理を中断します。"
+            "3) 友達リストの1ページ目が開けたら、このポップアップの［続行］を押してください。\n\n"
+            "※既存DBはクリアせず、usersの同一hrefを更新します。"
         )
-        logger.open_gate.emit("ログイン＆移動のお願い", instructions, proceed_event, cancel_event)
+        driver = open_lstep_driver(logger, instructions)
+        if driver is None:
+            return
 
-        # どちらかが押されるまで待つ（ポーリングで両方監視）
-        while True:
-            if proceed_event.wait(timeout=0.1):
-                break
-            if cancel_event.is_set():
-                logger.message.emit("🛑 ユーザー操作によりキャンセルされました。")
-                return  # finally へ
-
-        logger.message.emit("🟡 一覧を取得中…")
-        # scrape_user_list(driver)
-
-        logger.message.emit("🟡 メッセージ取得を開始します…")
-        scrape_messages(driver, logger)
-        logger.message.emit("🟢 スクレイピング完了。サポート担当の同期を開始します…")
-        try:
-            # スプレッドシート → users.support を更新（B列=LINE名、F列=担当者）
-            update_support_sync_main()   # ← 添付の main() をそのまま実行
-            logger.message.emit("✅ サポート担当の同期が完了しました。")
-        except Exception as e:
-            logger.message.emit(f"❌ サポート担当の同期に失敗: {e}")
-            # 続行は可能なので、アプリは止めずにログだけ出す
-            
-        logger.message.emit("🎉 全処理が完了しました！")
+        logger.message.emit("🟡 LStep友だち一覧の取得を開始します…")
+        scrape_user_list(driver, logger=logger, fetch_details=True)
+        sync_support_after_scraping(logger)
+        logger.message.emit("🎉 LStep友だち一覧取得が完了しました！")
     except Exception as e:
         logger.message.emit(f"❌ エラー: {e}")
         logger.show_error.emit("エラー", f"{e}")
@@ -255,74 +241,92 @@ def run_scraping(logger: UILogger):
             pass
         logger.enable_ui.emit(True)
 
+def run_lmessage_scraping(logger: UILogger):
+    """既存usersを元にLMessage/チャット履歴を取得する。"""
+    driver = None
+    try:
+        logger.enable_ui.emit(False)
+        logger.message.emit("🟡 LMessageメッセージ取得を初期化中…")
+        initialize_db()
+        initialize_message_table()
+
+        instructions = (
+            "1) ブラウザでLステップにログインしてください。\n"
+            "2) ログイン後、任意の画面まで進めたら［続行］を押してください。\n\n"
+            "※メッセージ取得はDB内のusers.hrefを元に各友だちページへ移動します。\n"
+            "※先に『LStep友だち一覧取得』を実行しておくと、最新の友だちを対象にできます。"
+        )
+        driver = open_lstep_driver(logger, instructions)
+        if driver is None:
+            return
+
+        logger.message.emit("🟡 LMessageメッセージ取得を開始します…")
+        scrape_messages(driver, logger)
+        sync_support_after_scraping(logger)
+        logger.message.emit("🎉 LMessageメッセージ取得が完了しました！")
+    except Exception as e:
+        logger.message.emit(f"❌ エラー: {e}")
+        logger.show_error.emit("エラー", f"{e}")
+    finally:
+        try:
+            if driver:
+                driver.quit()
+        except Exception:
+            pass
+        logger.enable_ui.emit(True)
+
+def run_scraping(logger: UILogger):
+    """LStep友だち一覧取得 → LMessageメッセージ取得の一括実行。"""
+    driver = None
+    try:
+        logger.enable_ui.emit(False)
+        logger.message.emit("🟡 一括スクレイピングを初期化中…")
+        initialize_db()
+        initialize_message_table()
+
+        instructions = (
+            "1) ブラウザでLステップにログインしてください。\n"
+            "2) 対象の『友達リスト』の1ページ目まで手動で移動してください。\n"
+            "3) 画面が開けたら、このポップアップの［続行］を押してください。\n\n"
+            "※実行順: LStep友だち一覧取得 → LMessageメッセージ取得 → サポート担当同期"
+        )
+        driver = open_lstep_driver(logger, instructions)
+        if driver is None:
+            return
+
+        logger.message.emit("🟡 LStep友だち一覧の取得を開始します…")
+        scrape_user_list(driver, logger=logger, fetch_details=True)
+        logger.message.emit("🟡 LMessageメッセージ取得を開始します…")
+        scrape_messages(driver, logger)
+        sync_support_after_scraping(logger)
+        logger.message.emit("🎉 一括スクレイピングが完了しました！")
+    except Exception as e:
+        logger.message.emit(f"❌ エラー: {e}")
+        logger.show_error.emit("エラー", f"{e}")
+    finally:
+        try:
+            if driver:
+                driver.quit()
+        except Exception:
+            pass
+        logger.enable_ui.emit(True)
+
+
 def run_tag_scraping(logger: UILogger):
     driver = None
     try:
         logger.enable_ui.emit(False)
-        logger.message.emit("🟡 初期化中…")
+        logger.message.emit("🟡 タグ取得を初期化中…")
         initialize_db()
-        logger.message.emit("🟡 既存データをクリアします（users）")
-        # clear_tables(include_messages=False)
 
-        logger.message.emit("🟡 ブラウザを起動します…")
-        options = Options()
-        options.add_experimental_option("detach", True)
-        driver = webdriver.Chrome(options=options)
-        driver.get("https://step.lme.jp/")
-        driver.get("https://step.lme.jp/")
-
-        # ▼▼▼ ログインフォーム自動入力（ボタン押下なし） ▼▼▼
-        try:
-            logger.message.emit("🟡 ログインID・パスワードを自動入力しています…")
-
-            # ログインフォームの要素が出るまで待機
-            wait = WebDriverWait(driver, 20)
-
-            # id="email_login" の入力欄を取得
-            login_id = wait.until(
-                EC.presence_of_element_located((By.ID, "email_login"))
-            )
-
-            # id="password_login" の入力欄を取得
-            login_pw = wait.until(
-                EC.presence_of_element_located((By.ID, "password_login"))
-            )
-
-            # 値を入力（とりあえずダミー）
-            login_id.clear()
-            login_id.send_keys("miomama0605@gmail.com")
-
-            login_pw.clear()
-            login_pw.send_keys("20250606@Mio")
-
-            logger.message.emit("🟡 ID・パスワードの入力が完了しました。ログイン操作は手動で行ってください。")
-
-        except Exception as e:
-            logger.message.emit(f"⚠️ ログイン自動入力に失敗: {e}")
-
-        # ▲▲▲ 自動入力ここまで ▲▲▲
-
-        # ---- UIゲート（OKで続行 / キャンセルで中断）----
-        proceed_event = threading.Event()
-        cancel_event = threading.Event()
         instructions = (
             "1) ブラウザでLステップにログインしてください。\n"
-            "2) 対象の『友達リスト』まで手動で移動してください。\n"
-            "3) 画面が開けたら、このポップアップの［続行］を押してください。\n\n"
-            "※［キャンセル］を押すと処理を中断します。"
+            "2) ログイン後、任意の画面まで進めたら［続行］を押してください。\n\n"
+            "※タグ取得はDB内のusers.hrefを元に各友だちページへ移動します。"
         )
-        logger.open_gate.emit("ログイン＆移動のお願い", instructions, proceed_event, cancel_event)
-
-        # どちらかが押されるまで待つ（ポーリングで両方監視）
-        while True:
-            if proceed_event.wait(timeout=0.1):
-                break
-            if cancel_event.is_set():
-                logger.message.emit("🛑 ユーザー操作によりキャンセルされました。")
-                return  # finally へ
-
-        logger.message.emit("🟡 一覧を取得中…")
-        # scrape_user_list(driver)
+        driver = open_lstep_driver(logger, instructions)
+        if driver is None:
+            return
 
         logger.message.emit("🟡 タグ取得を開始します…")
         scrape_tags(driver, logger)
@@ -370,20 +374,28 @@ class MainWindow(QWidget):
         actions = QVBoxLayout(actions_card)
 
         row1 = QHBoxLayout()
-        self.btn_scrape = QPushButton("スクレイピング実行")
+        self.btn_lstep_scrape = QPushButton("LStep友だち一覧取得")
+        self.btn_lstep_scrape.clicked.connect(self.on_click_lstep_scrape)
+        row1.addWidget(self.btn_lstep_scrape)
+
+        self.btn_lmessage_scrape = QPushButton("LMessageメッセージ取得")
+        self.btn_lmessage_scrape.clicked.connect(self.on_click_lmessage_scrape)
+        row1.addWidget(self.btn_lmessage_scrape)
+
+        row2 = QHBoxLayout()
+        self.btn_scrape = QPushButton("一括取得（LStep→LMessage）")
         self.btn_scrape.clicked.connect(self.on_click_scrape)
-        row1.addWidget(self.btn_scrape)
+        row2.addWidget(self.btn_scrape)
 
         self.btn_tag_scrape = QPushButton("タグ取得実行")
         self.btn_tag_scrape.clicked.connect(self.on_click_tag_scrape)
-        row1.addWidget(self.btn_tag_scrape)
-        
-        row2 = QHBoxLayout()
-        self.btn_upload = QPushButton("サーバーアップロード実行")
-        self.btn_upload.clicked.connect(self.on_click_upload)
-        row2.addWidget(self.btn_upload)
+        row2.addWidget(self.btn_tag_scrape)
 
         row3 = QHBoxLayout()
+        self.btn_upload = QPushButton("サーバーアップロード実行")
+        self.btn_upload.clicked.connect(self.on_click_upload)
+        row3.addWidget(self.btn_upload)
+
         self.btn_analysis = QPushButton("分析（別UI起動）")
         self.btn_analysis.clicked.connect(self.on_click_analysis)
         # row3.addWidget(self.btn_analysis)
@@ -442,6 +454,8 @@ class MainWindow(QWidget):
             self.logger.enable_ui.emit(True)
     # ---------- UI slots ----------
     def set_controls_enabled(self, enabled: bool):
+        self.btn_lstep_scrape.setEnabled(enabled)
+        self.btn_lmessage_scrape.setEnabled(enabled)
         self.btn_scrape.setEnabled(enabled)
         self.btn_tag_scrape.setEnabled(enabled)
         self.btn_upload.setEnabled(enabled)
@@ -489,6 +503,14 @@ class MainWindow(QWidget):
             self.set_controls_enabled(True)  # 念のため即座にUIを戻す
 
     # ---------- Actions ----------
+    def on_click_lstep_scrape(self):
+        t = threading.Thread(target=run_lstep_scraping, args=(self.logger,), daemon=True)
+        t.start()
+
+    def on_click_lmessage_scrape(self):
+        t = threading.Thread(target=run_lmessage_scraping, args=(self.logger,), daemon=True)
+        t.start()
+
     def on_click_scrape(self):
         t = threading.Thread(target=run_scraping, args=(self.logger,), daemon=True)
         t.start()
