@@ -2,15 +2,15 @@
 import sys
 import sqlite3
 import threading
-import csv, os
-import json
+import csv
+import os
 from datetime import datetime
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QPlainTextEdit, QMessageBox, QDialog, QDialogButtonBox, QTextEdit
 )
-from PySide6.QtCore import Qt, Signal, QObject, Slot
+from PySide6.QtCore import Signal, QObject, Slot
 
 # Selenium
 from selenium import webdriver
@@ -18,15 +18,12 @@ from selenium.webdriver.chrome.options import Options
 
 # 既存ロジック
 from main import initialize_db, scrape_user_list
-from message import initialize_message_table, scrape_messages
 from tags import scrape_tags
 # from tags import initialize_tag_table, scrape_tags
 
 # スタイル
 from style import app_stylesheet, apply_card_shadow
-import threading
 from uploader import upload_db_ftps               # ← 既存のFTPSアップローダ
-from ui_analysis import AnalysisWindow            # ← 別ウィンドウ
 import pprint
 from update_support_from_sheet import main as update_support_sync_main
 from selenium.webdriver.common.by import By
@@ -34,23 +31,20 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 LSTEP_LOGIN_URL = "https://manager.linestep.net/account/login"
-LMESSAGE_LOGIN_URL = "https://step.lme.jp/"
 
 def export_tables_to_csv(db_path: str = "lstep_users.db", out_dir: str = "exports") -> dict:
     """
-    users と messages を CSV 出力（UTF-8 with BOM）する。
-    戻り値: {"users": <path>, "messages": <path>}
+    users を CSV 出力（UTF-8 with BOM）する。
+    戻り値: {"users": <path>}
     """
     os.makedirs(out_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_users = os.path.join(out_dir, f"users_{ts}.csv")
-    out_messages = os.path.join(out_dir, f"messages_{ts}.csv")
 
     conn = sqlite3.connect(db_path)
     try:
         cur = conn.cursor()
 
-        # users
         cur.execute("SELECT * FROM users")
         cols_u = [d[0] for d in cur.description]
         rows_u = cur.fetchall()
@@ -91,17 +85,8 @@ def export_tables_to_csv(db_path: str = "lstep_users.db", out_dir: str = "export
             w = csv.writer(fw)
             w.writerow(cols_u_export)
             w.writerows(rows_u_export)
+        return {"users": out_users, "users_count": len(rows_u_export)}
 
-        # messages
-        cur.execute("SELECT * FROM messages")
-        cols_m = [d[0] for d in cur.description]
-        rows_m = cur.fetchall()
-        with open(out_messages, "w", encoding="utf-8-sig", newline="") as fw:
-            w = csv.writer(fw)
-            w.writerow(cols_m)
-            w.writerows(rows_m)
-
-        return {"users": out_users, "messages": out_messages, "users_count": len(rows_u_export), "messages_count": len(rows_m)}
     finally:
         conn.close()
 
@@ -147,13 +132,11 @@ class UILogger(QObject):
     open_gate = Signal(str, str, object, object)
 
 # ===================== ユーティリティ =====================
-def clear_tables(include_messages: bool = True):
-    """users / messages テーブルの中身をクリア"""
+def clear_tables():
+    """users テーブルの中身をクリア"""
     conn = sqlite3.connect("lstep_users.db")
     cur = conn.cursor()
     cur.execute("DELETE FROM users")
-    if include_messages:
-        cur.execute("DELETE FROM messages")
     conn.commit()
     conn.close()
 
@@ -231,19 +214,6 @@ def run_lstep_scraping(logger: UILogger):
         logger.message.emit("🟡 LStep友だち一覧の取得を開始します…")
         scrape_user_list(driver, logger=logger, fetch_details=True)
 
-        logger.message.emit("🟡 LStep取得用ブラウザを終了し、LMessageログイン用ブラウザを起動します…")
-        driver.quit()
-        driver = None
-
-        lmessage_instructions = (
-            "1) ブラウザでLMessageにログインしてください。\n"
-            "2) ログイン後、任意の画面まで進めたら［続行］を押してください。\n\n"
-            "※続行後、DB内のusers.hrefを元にLMessageメッセージを取得します。"
-        )
-        driver = open_lstep_driver(logger, lmessage_instructions, LMESSAGE_LOGIN_URL)
-        if driver is None:
-            return
-
         sync_support_after_scraping(logger)
         logger.message.emit("🎉 LStep友だち一覧取得が完了しました！")
     except Exception as e:
@@ -256,77 +226,6 @@ def run_lstep_scraping(logger: UILogger):
         except Exception:
             pass
         logger.enable_ui.emit(True)
-
-def run_lmessage_scraping(logger: UILogger):
-    """既存usersを元にLMessage/チャット履歴を取得する。"""
-    driver = None
-    try:
-        logger.enable_ui.emit(False)
-        logger.message.emit("🟡 LMessageメッセージ取得を初期化中…")
-        initialize_db()
-        initialize_message_table()
-
-        instructions = (
-            "1) ブラウザでLMessageにログインしてください。\n"
-            "2) ログイン後、任意の画面まで進めたら［続行］を押してください。\n\n"
-            "※メッセージ取得はDB内のusers.hrefを元に各友だちページへ移動します。\n"
-            "※先に『LStep友だち一覧取得』を実行しておくと、最新の友だちを対象にできます。"
-        )
-        driver = open_lstep_driver(logger, instructions, LMESSAGE_LOGIN_URL)
-        if driver is None:
-            return
-
-        logger.message.emit("🟡 LMessageメッセージ取得を開始します…")
-        scrape_messages(driver, logger)
-        sync_support_after_scraping(logger)
-        logger.message.emit("🎉 LMessageメッセージ取得が完了しました！")
-    except Exception as e:
-        logger.message.emit(f"❌ エラー: {e}")
-        logger.show_error.emit("エラー", f"{e}")
-    finally:
-        try:
-            if driver:
-                driver.quit()
-        except Exception:
-            pass
-        logger.enable_ui.emit(True)
-
-def run_scraping(logger: UILogger):
-    """LStep友だち一覧取得 → LMessageメッセージ取得の一括実行。"""
-    driver = None
-    try:
-        logger.enable_ui.emit(False)
-        logger.message.emit("🟡 一括スクレイピングを初期化中…")
-        initialize_db()
-        initialize_message_table()
-
-        instructions = (
-            "1) ブラウザでLステップにログインしてください。\n"
-            "2) 対象の『友達リスト』の1ページ目まで手動で移動してください。\n"
-            "3) 画面が開けたら、このポップアップの［続行］を押してください。\n\n"
-            "※実行順: LStep友だち一覧取得 → LMessageメッセージ取得 → サポート担当同期"
-        )
-        driver = open_lstep_driver(logger, instructions, LSTEP_LOGIN_URL)
-        if driver is None:
-            return
-
-        logger.message.emit("🟡 LStep友だち一覧の取得を開始します…")
-        scrape_user_list(driver, logger=logger, fetch_details=True)
-        logger.message.emit("🟡 LMessageメッセージ取得を開始します…")
-        scrape_messages(driver, logger)
-        sync_support_after_scraping(logger)
-        logger.message.emit("🎉 一括スクレイピングが完了しました！")
-    except Exception as e:
-        logger.message.emit(f"❌ エラー: {e}")
-        logger.show_error.emit("エラー", f"{e}")
-    finally:
-        try:
-            if driver:
-                driver.quit()
-        except Exception:
-            pass
-        logger.enable_ui.emit(True)
-
 
 def run_tag_scraping(logger: UILogger):
     driver = None
@@ -370,7 +269,6 @@ class MainWindow(QWidget):
         self.logger.message.connect(self.append_log)
         self.logger.enable_ui.connect(self.set_controls_enabled)
         
-        self.analysis_window = None   # ← GC対策で保持
         self.logger.show_info.connect(self.on_show_info)
         self.logger.show_error.connect(self.on_show_error)
         self.logger.open_gate.connect(self.on_open_gate)
@@ -394,36 +292,22 @@ class MainWindow(QWidget):
         self.btn_lstep_scrape.clicked.connect(self.on_click_lstep_scrape)
         row1.addWidget(self.btn_lstep_scrape)
 
-        self.btn_lmessage_scrape = QPushButton("LMessageメッセージ取得")
-        self.btn_lmessage_scrape.clicked.connect(self.on_click_lmessage_scrape)
-        row1.addWidget(self.btn_lmessage_scrape)
+        self.btn_tag_scrape = QPushButton("LStepタグ取得")
+        self.btn_tag_scrape.clicked.connect(self.on_click_tag_scrape)
+        row1.addWidget(self.btn_tag_scrape)
 
         row2 = QHBoxLayout()
-        self.btn_scrape = QPushButton("一括取得（LStep→LMessage）")
-        self.btn_scrape.clicked.connect(self.on_click_scrape)
-        row2.addWidget(self.btn_scrape)
-
-        self.btn_tag_scrape = QPushButton("タグ取得実行")
-        self.btn_tag_scrape.clicked.connect(self.on_click_tag_scrape)
-        row2.addWidget(self.btn_tag_scrape)
-
-        row3 = QHBoxLayout()
         self.btn_upload = QPushButton("サーバーアップロード実行")
         self.btn_upload.clicked.connect(self.on_click_upload)
-        row3.addWidget(self.btn_upload)
-
-        self.btn_analysis = QPushButton("分析（別UI起動）")
-        self.btn_analysis.clicked.connect(self.on_click_analysis)
-        # row3.addWidget(self.btn_analysis)
+        row2.addWidget(self.btn_upload)
 
         # ▼ 追加：CSVエクスポートボタン
-        self.btn_export = QPushButton("CSVエクスポート（users / messages）")
+        self.btn_export = QPushButton("CSVエクスポート（users）")
         self.btn_export.clicked.connect(self.on_click_export)
-        row3.addWidget(self.btn_export)
+        row2.addWidget(self.btn_export)
 
         actions.addLayout(row1)
         actions.addLayout(row2)
-        actions.addLayout(row3)
         root.addWidget(actions_card)
         apply_card_shadow(actions_card)  # ← カードに影
 
@@ -471,11 +355,8 @@ class MainWindow(QWidget):
     # ---------- UI slots ----------
     def set_controls_enabled(self, enabled: bool):
         self.btn_lstep_scrape.setEnabled(enabled)
-        self.btn_lmessage_scrape.setEnabled(enabled)
-        self.btn_scrape.setEnabled(enabled)
         self.btn_tag_scrape.setEnabled(enabled)
         self.btn_upload.setEnabled(enabled)
-        # self.btn_analysis.setEnabled(enabled)
         self.btn_export.setEnabled(enabled)   # ← 追加
 
     def append_log(self, text: str):
@@ -486,9 +367,9 @@ class MainWindow(QWidget):
             self.logger.enable_ui.emit(False)
             self.logger.message.emit("🟡 CSVエクスポートを開始します…")
             result = export_tables_to_csv(db_path="lstep_users.db", out_dir="exports")
-            self.logger.message.emit(f"✅ エクスポート完了: users={result['users_count']}件, messages={result['messages_count']}件")
-            self.logger.message.emit(f"📄 保存先: {result['users']}\n📄 保存先: {result['messages']}")
-            self.logger.show_info.emit("完了", f"CSVを出力しました。\n{result['users']}\n{result['messages']}")
+            self.logger.message.emit(f"✅ エクスポート完了: users={result['users_count']}件")
+            self.logger.message.emit(f"📄 保存先: {result['users']}")
+            self.logger.show_info.emit("完了", f"CSVを出力しました。\n{result['users']}")
         except Exception as e:
             self.logger.message.emit(f"❌ エクスポート失敗: {e}")
             self.logger.show_error.emit("エクスポート失敗", f"{e}")
@@ -523,14 +404,6 @@ class MainWindow(QWidget):
         t = threading.Thread(target=run_lstep_scraping, args=(self.logger,), daemon=True)
         t.start()
 
-    def on_click_lmessage_scrape(self):
-        t = threading.Thread(target=run_lmessage_scraping, args=(self.logger,), daemon=True)
-        t.start()
-
-    def on_click_scrape(self):
-        t = threading.Thread(target=run_scraping, args=(self.logger,), daemon=True)
-        t.start()
-
     def on_click_tag_scrape(self):
         t = threading.Thread(target=run_tag_scraping, args=(self.logger,), daemon=True)
         t.start()
@@ -538,14 +411,7 @@ class MainWindow(QWidget):
     def on_click_upload(self):
         t = threading.Thread(target=self.run_upload, daemon=True)
         t.start()
-
-    def on_click_analysis(self):
-        if self.analysis_window is None:
-            self.analysis_window = AnalysisWindow()
-            self.analysis_window.setStyleSheet(app_stylesheet())
-        self.analysis_window.show()
-        self.analysis_window.raise_()
-        self.analysis_window.activateWindow()
+        
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("SUP-ADMIN")

@@ -10,7 +10,6 @@ import time
 import re
 from urllib.parse import urljoin
 from typing import Optional
-from message import initialize_message_table, scrape_messages
 
 DB_PATH = "lstep_users.db"
 BASE_URL = "https://step.lme.jp/"  # href が相対パスでも OK にする
@@ -67,7 +66,6 @@ def clear_tables():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("DELETE FROM users")
-    cursor.execute("DELETE FROM messages")
     conn.commit()
     conn.close()
 
@@ -281,11 +279,5 @@ if __name__ == "__main__":
     print("🟡 一覧を取得中...")
     scrape_user_list(driver)
 
-    print("🟡 メッセージテーブルを初期化中...")
-    initialize_message_table()
-
-    print("🟡 メッセージを取得中...")
-    scrape_messages(driver)
-
-    print("🎉 全処理が完了しました！")
+    print("🎉 LStep友だち一覧取得が完了しました！")
     driver.quit()
