@@ -14,6 +14,7 @@ from message import initialize_message_table, scrape_messages
 
 DB_PATH = "lstep_users.db"
 BASE_URL = "https://step.lme.jp/"  # href が相対パスでも OK にする
+LSTEP_LOGIN_URL = "https://manager.linestep.net/account/login"
 DT_RE = re.compile(r"(\d{4}[./-]\d{2}[./-]\d{2})\s+(\d{2}:\d{2})(?::\d{2})?")
 # -------------------------
 # DB初期化（新規作成 + 既存DBのカラム追加にも対応）
@@ -271,8 +272,8 @@ if __name__ == "__main__":
     options.add_experimental_option("detach", True)
     driver = webdriver.Chrome(options=options)
 
-    driver.get("https://step.lme.jp/")
-    input("ログインが完了したら Enter を押してください → ")
+    driver.get(LSTEP_LOGIN_URL)
+    input("LSTEPへのログインが完了したら Enter を押してください → ")
 
     print("🟡 既存データをクリア中...")
     clear_tables()

@@ -183,12 +183,14 @@ def _extract_sender_name_from_block(block):
         if txt:
             return txt
     return None
+LMESSAGE_LOGIN_URL = "https://step.lme.jp/"
+
 def restart_driver_with_ui(driver, logger):
     logger.message.emit("🔁 ドライバーを再起動します…")
 
     try:
         new_driver = webdriver.Chrome()
-        new_driver.get("https://step.lme.jp/")
+        new_driver.get(LMESSAGE_LOGIN_URL)
 
         # ▼▼▼ ログインフォーム自動入力（最初の処理と同じ） ▼▼▼
         try:

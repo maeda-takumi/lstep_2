@@ -33,6 +33,9 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
+LSTEP_LOGIN_URL = "https://manager.linestep.net/account/login"
+LMESSAGE_LOGIN_URL = "https://step.lme.jp/"
+
 def export_tables_to_csv(db_path: str = "lstep_users.db", out_dir: str = "exports") -> dict:
     """
     users と messages を CSV 出力（UTF-8 with BOM）する。
@@ -169,14 +172,13 @@ def wait_for_user_gate(logger: UILogger, instructions: str) -> bool:
             return False
 
 
-def open_lstep_driver(logger: UILogger, instructions: str):
-    """LStep/LMessage共通のブラウザ起動・ログイン入力・手動移動待ち。"""
+def open_lstep_driver(logger: UILogger, instructions: str, login_url: str = LSTEP_LOGIN_URL):
+    """ブラウザ起動・指定URLでのログイン入力・手動移動待ち。"""
     logger.message.emit("🟡 ブラウザを起動します…")
     options = Options()
     options.add_experimental_option("detach", True)
     driver = webdriver.Chrome(options=options)
-    driver.get("https://step.lme.jp/")
-    driver.get("https://step.lme.jp/")
+    driver.get(login_url)
 
     # ▼▼▼ ログインフォーム自動入力（ボタン押下なし） ▼▼▼
     try:
@@ -222,12 +224,26 @@ def run_lstep_scraping(logger: UILogger):
             "3) 友達リストの1ページ目が開けたら、このポップアップの［続行］を押してください。\n\n"
             "※既存DBはクリアせず、usersの同一hrefを更新します。"
         )
-        driver = open_lstep_driver(logger, instructions)
+        driver = open_lstep_driver(logger, instructions, LSTEP_LOGIN_URL)
         if driver is None:
             return
 
         logger.message.emit("🟡 LStep友だち一覧の取得を開始します…")
         scrape_user_list(driver, logger=logger, fetch_details=True)
+
+        logger.message.emit("🟡 LStep取得用ブラウザを終了し、LMessageログイン用ブラウザを起動します…")
+        driver.quit()
+        driver = None
+
+        lmessage_instructions = (
+            "1) ブラウザでLMessageにログインしてください。\n"
+            "2) ログイン後、任意の画面まで進めたら［続行］を押してください。\n\n"
+            "※続行後、DB内のusers.hrefを元にLMessageメッセージを取得します。"
+        )
+        driver = open_lstep_driver(logger, lmessage_instructions, LMESSAGE_LOGIN_URL)
+        if driver is None:
+            return
+
         sync_support_after_scraping(logger)
         logger.message.emit("🎉 LStep友だち一覧取得が完了しました！")
     except Exception as e:
@@ -251,12 +267,12 @@ def run_lmessage_scraping(logger: UILogger):
         initialize_message_table()
 
         instructions = (
-            "1) ブラウザでLステップにログインしてください。\n"
+            "1) ブラウザでLMessageにログインしてください。\n"
             "2) ログイン後、任意の画面まで進めたら［続行］を押してください。\n\n"
             "※メッセージ取得はDB内のusers.hrefを元に各友だちページへ移動します。\n"
             "※先に『LStep友だち一覧取得』を実行しておくと、最新の友だちを対象にできます。"
         )
-        driver = open_lstep_driver(logger, instructions)
+        driver = open_lstep_driver(logger, instructions, LMESSAGE_LOGIN_URL)
         if driver is None:
             return
 
@@ -290,7 +306,7 @@ def run_scraping(logger: UILogger):
             "3) 画面が開けたら、このポップアップの［続行］を押してください。\n\n"
             "※実行順: LStep友だち一覧取得 → LMessageメッセージ取得 → サポート担当同期"
         )
-        driver = open_lstep_driver(logger, instructions)
+        driver = open_lstep_driver(logger, instructions, LSTEP_LOGIN_URL)
         if driver is None:
             return
 
@@ -324,7 +340,7 @@ def run_tag_scraping(logger: UILogger):
             "2) ログイン後、任意の画面まで進めたら［続行］を押してください。\n\n"
             "※タグ取得はDB内のusers.hrefを元に各友だちページへ移動します。"
         )
-        driver = open_lstep_driver(logger, instructions)
+        driver = open_lstep_driver(logger, instructions, LSTEP_LOGIN_URL)
         if driver is None:
             return
 
